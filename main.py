@@ -110,7 +110,7 @@ def check_and_grant_vip(user_id):
     initial_invites = get_setting('initial_invites_required')
     trial_days = get_setting('free_trial_days')
 
-if active_refs >= initial_invites:
+    if active_refs >= initial_invites:
         start_date = datetime.now()
         end_date = start_date + timedelta(days=trial_days)
         
@@ -121,7 +121,7 @@ if active_refs >= initial_invites:
         
         conn.commit()
     
-        conn.close()
+    conn.close()
 
 # ========== واجهة المستخدم ==========
 def main_keyboard(user_id):
@@ -205,7 +205,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             response = model.generate_content(
                 f"أكتب كود برمجي فقط بدون شرح حسب الطلب التالي:\n\n{user_message}"
             )
-            await update.message.reply_text(f"`python\n{response.text}\n```", 
+            await update.message.reply_text(f"```python\n{response.text}\n```", 
                                           parse_mode='Markdown')
         except Exception as e:
             await update.message.reply_text(f"⚠️ حدث خطأ: {str(e)}")
@@ -235,6 +235,10 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == 'admin_panel' and user_id == ADMIN_ID:
         await admin_panel(query)
+    
+    elif query.data == 'main_menu':
+        await query.edit_message_text("🔍 اختر أحد الخيارات من القائمة:", 
+                                   reply_markup=main_keyboard(user_id))
 
 async def show_vip_options(query, user_id):
     conn = sqlite3.connect('bot_db.sqlite')
