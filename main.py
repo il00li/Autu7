@@ -6,10 +6,10 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import google.generativeai as genai
 
 # التوكنات والإعدادات (من متغيرات البيئة)
-TELEGRAM_TOKEN = os.environ['8110119856:AAEKyEiIlpHP2e-xOQym0YHkGEBLRgyG_wA']
-GEMINI_API_KEY = os.environ['AIzaSyAEULfP5zi5irv4yRhFugmdsjBoLk7kGsE']
-ADMIN_ID = int(os.environ['7251748706'])
-BOT_USERNAME = os.environ['@SEAK7_BOT']
+TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '8110119856:AAEKyEiIlpHP2e-xOQym0YHkGEBLRgyG_wA')
+GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', 'AIzaSyAEULfP5zi5irv4yRhFugmdsjBoLk7kGsE')
+ADMIN_ID = int(os.environ.get('ADMIN_ID', '7251748706'))
+BOT_USERNAME = os.environ.get('BOT_USERNAME', '@SEAK7_BOT')
 WEBHOOK_URL = "https://autu7.onrender.com"  # رابط الويب هوك الخاص بك
 
 # تهيئة Gemini
@@ -298,6 +298,7 @@ def main():
     if not webhook_url.endswith('/'):
         webhook_url += '/'
     
+    # إعدادات ويب هوك
     application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
