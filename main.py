@@ -1,9 +1,17 @@
 import os
 import sqlite3
+import logging
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import google.generativeai as genai
+
+# إعداد تسجيل الأخطاء
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # التوكنات والإعدادات (من متغيرات البيئة)
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '8110119856:AAEKyEiIlpHP2e-xOQym0YHkGEBLRgyG_wA')
@@ -91,7 +99,7 @@ async def check_channel_subscription(user_id, bot):
             if member.status in ['left', 'kicked']:
                 return False
         except Exception as e:
-            print(f"Error checking channel subscription: {e}")
+            logger.error(f"Error checking channel subscription: {e}")
             return False
     return True
 
@@ -148,165 +156,200 @@ def main_keyboard(user_id):
 
 # ========== معالجة الأوامر والرسائل ==========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    args = context.args
-    
-    invited_by = 0
-    if args and args[0].startswith('ref_'):
-        try:
-            invited_by = int(args[0][4:])
-            register_user(user, invited_by)
-            
-            conn = sqlite3.connect(DB_PATH)
-            c = conn.cursor()
-            c.execute("INSERT INTO referrals (referrer_id, referee_id, date) VALUES (?, ?, ?)",
-                      (invited_by, user.id, datetime.now().isoformat()))
-            conn.commit()
-            conn.close()
-            
-            check_and_grant_vip(invited_by)
-            
-        except ValueError:
-            pass
-    
-    register_user(user)
-    
-    if not await check_channel_subscription(user.id, context.bot):
-        channels = get_required_channels()
-        message = "❗ يجب الاشتراك في القنوات التالية:\n"
-        for channel in channels:
-            message += f"- @{channel[1]}\n"
-        message += "\nبعد الاشتراك اضغط /start"
-        await update.message.reply_text(message)
-        return
-    
-    welcome_msg = f"""
-    🚀 مرحبًا {user.first_name} في بوت المطورين!
-    
-    اختر أحد الخيارات من القائمة:
-    """
-    await update.message.reply_text(welcome_msg, reply_markup=main_keyboard(user.id))
-
-async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_message = update.message.text
-    
-    if not check_vip_status(user_id):
-        await update.message.reply_text("⛔ هذه الميزة متاحة لأعضاء VIP فقط\n\n"
-                                      "استخدم /start لمعرفة كيفية الحصول على عضوية VIP")
-        return
-    
-    if not await check_channel_subscription(user_id, context.bot):
-        channels = get_required_channels()
-        message = "❗ يجب تجديد الاشتراك في القنوات:\n"
-        for channel in channels:
-            message += f"- @{channel[1]}\n"
-        await update.message.reply_text(message)
-        return
-    
-    if context.user_data.get('awaiting_code'):
-        try:
-            response = model.generate_content(
-                f"أكتب كود برمجي فقط بدون شرح حسب الطلب التالي:\n\n{user_message}"
-            )
-            await update.message.reply_text(f"```python\n{response.text}\n```", 
-                                          parse_mode='Markdown')
-        except Exception as e:
-            await update.message.reply_text(f"⚠️ حدث خطأ: {str(e)}")
+    try:
+        user = update.effective_user
+        args = context.args
         
-        context.user_data.pop('awaiting_code', None)
-        return
-    
-    await update.message.reply_text("🔍 اختر أحد الخيارات من القائمة:", 
-                                  reply_markup=main_keyboard(user_id))
-
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    
-    if query.data == 'write_code':
-        if not check_vip_status(user_id):
-            await query.edit_message_text("⛔ هذه الميزة تحتاج عضوية VIP\n\n"
-                                        "استخدم /start لمعرفة كيفية الحصول عليها")
+        invited_by = 0
+        if args and args[0].startswith('ref_'):
+            try:
+                invited_by = int(args[0][4:])
+                register_user(user, invited_by)
+                
+                conn = sqlite3.connect(DB_PATH)
+                c = conn.cursor()
+                c.execute("INSERT INTO referrals (referrer_id, referee_id, date) VALUES (?, ?, ?)",
+                          (invited_by, user.id, datetime.now().isoformat()))
+                conn.commit()
+                conn.close()
+                
+                check_and_grant_vip(invited_by)
+                
+            except ValueError as ve:
+                logger.error(f"Value error in referral: {ve}")
+        
+        register_user(user)
+        
+        if not await check_channel_subscription(user.id, context.bot):
+            channels = get_required_channels()
+            message = "❗ يجب الاشتراك في القنوات التالية:\n"
+            for channel in channels:
+                message += f"- @{channel[1]}\n"
+            message += "\nبعد الاشتراك اضغط /start"
+            await update.message.reply_text(message)
             return
         
-        await query.edit_message_text("📝 أرسل وصف الكود الذي تريده مع ذكر اللغة:\nمثال: \"دالة بلغة Python لتحويل التاريخ\"")
-        context.user_data['awaiting_code'] = True
+        welcome_msg = f"""
+        🚀 مرحبًا {user.first_name} في بوت المطورين!
+        
+        اختر أحد الخيارات من القائمة:
+        """
+        await update.message.reply_text(welcome_msg, reply_markup=main_keyboard(user.id))
     
-    elif query.data == 'get_vip':
-        await show_vip_options(query, user_id)
+    except Exception as e:
+        logger.error(f"Error in start command: {e}")
+        await update.message.reply_text("⚠️ حدث خطأ غير متوقع. الرجاء المحاولة لاحقًا.")
+
+async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        user_id = update.effective_user.id
+        user_message = update.message.text
+        
+        if not check_vip_status(user_id):
+            await update.message.reply_text("⛔ هذه الميزة متاحة لأعضاء VIP فقط\n\n"
+                                          "استخدم /start لمعرفة كيفية الحصول على عضوية VIP")
+            return
+        
+        if not await check_channel_subscription(user_id, context.bot):
+            channels = get_required_channels()
+            message = "❗ يجب تجديد الاشتراك في القنوات:\n"
+            for channel in channels:
+                message += f"- @{channel[1]}\n"
+            await update.message.reply_text(message)
+            return
+        
+        if context.user_data.get('awaiting_code'):
+            try:
+                response = model.generate_content(
+                    f"أكتب كود برمجي فقط بدون شرح حسب الطلب التالي:\n\n{user_message}"
+                )
+                await update.message.reply_text(f"```python\n{response.text}\n```", 
+                                              parse_mode='Markdown')
+            except Exception as e:
+                logger.error(f"Error generating code: {e}")
+                await update.message.reply_text(f"⚠️ حدث خطأ: {str(e)}")
+            
+            context.user_data.pop('awaiting_code', None)
+            return
+        
+        await update.message.reply_text("🔍 اختر أحد الخيارات من القائمة:", 
+                                      reply_markup=main_keyboard(user_id))
     
-    elif query.data == 'admin_panel' and user_id == ADMIN_ID:
-        await admin_panel(query)
+    except Exception as e:
+        logger.error(f"Error handling message: {e}")
+        await update.message.reply_text("⚠️ حدث خطأ غير متوقع. الرجاء المحاولة لاحقًا.")
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        query = update.callback_query
+        await query.answer()
+        user_id = query.from_user.id
+        
+        if query.data == 'write_code':
+            if not check_vip_status(user_id):
+                await query.edit_message_text("⛔ هذه الميزة تحتاج عضوية VIP\n\n"
+                                            "استخدم /start لمعرفة كيفية الحصول عليها")
+                return
+            
+            await query.edit_message_text("📝 أرسل وصف الكود الذي تريده مع ذكر اللغة:\nمثال: \"دالة بلغة Python لتحويل التاريخ\"")
+            context.user_data['awaiting_code'] = True
+        
+        elif query.data == 'get_vip':
+            await show_vip_options(query, user_id)
+        
+        elif query.data == 'admin_panel' and user_id == ADMIN_ID:
+            await admin_panel(query)
+        
+        elif query.data == 'main_menu':
+            await query.edit_message_text("🔍 اختر أحد الخيارات من القائمة:", 
+                                       reply_markup=main_keyboard(user_id))
     
-    elif query.data == 'main_menu':
-        await query.edit_message_text("🔍 اختر أحد الخيارات من القائمة:", 
-                                   reply_markup=main_keyboard(user_id))
+    except Exception as e:
+        logger.error(f"Error in button handler: {e}")
+        await query.edit_message_text("⚠️ حدث خطأ غير متوقع. الرجاء المحاولة لاحقًا.")
 
 async def show_vip_options(query, user_id):
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id = ? AND is_active = 1", (user_id,))
-    ref_count = c.fetchone()[0]
-    conn.close()
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        c = conn.cursor()
+        c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id = ? AND is_active = 1", (user_id,))
+        ref_count = c.fetchone()[0]
+        conn.close()
+        
+        required = get_setting('initial_invites_required')
+        days = get_setting('free_trial_days')
+        
+        message = f"""
+        🎟 نظام العضوية VIP:
+        
+        - عضوية مجانية {days} أيام عند دعوة {required} مستخدم
+        - لديك {ref_count} من أصل {required} دعوة
+        - رابط دعوتك: https://t.me/{BOT_USERNAME}?start=ref_{user_id}
+        """
+        
+        keyboard = [
+            [InlineKeyboardButton("🔗 مشاركة رابط الدعوة", switch_inline_query=f"انضم عبر رابط الدعوة هذا: https://t.me/{BOT_USERNAME}?start=ref_{user_id}")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data='main_menu')]
+        ]
+        
+        await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
     
-    required = get_setting('initial_invites_required')
-    days = get_setting('free_trial_days')
-    
-    message = f"""
-    🎟 نظام العضوية VIP:
-    
-    - عضوية مجانية {days} أيام عند دعوة {required} مستخدم
-    - لديك {ref_count} من أصل {required} دعوة
-    - رابط دعوتك: https://t.me/{BOT_USERNAME}?start=ref_{user_id}
-    """
-    
-    keyboard = [
-        [InlineKeyboardButton("🔗 مشاركة رابط الدعوة", switch_inline_query=f"انضم عبر رابط الدعوة هذا: https://t.me/{BOT_USERNAME}?start=ref_{user_id}")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data='main_menu')]
-    ]
-    
-    await query.edit_message_text(message, reply_markup=InlineKeyboardMarkup(keyboard))
+    except Exception as e:
+        logger.error(f"Error showing VIP options: {e}")
+        await query.edit_message_text("⚠️ حدث خطأ في عرض خيارات VIP. الرجاء المحاولة لاحقًا.")
 
 async def admin_panel(query):
-    keyboard = [
-        [InlineKeyboardButton("📊 الإحصائيات", callback_data='admin_stats')],
-        [InlineKeyboardButton("📢 إرسال إشعار", callback_data='admin_broadcast')],
-        [InlineKeyboardButton("🛠 إدارة القنوات", callback_data='manage_channels')],
-        [InlineKeyboardButton("⚙️ تعديل الإعدادات", callback_data='edit_settings')],
-        [InlineKeyboardButton("🔙 رجوع", callback_data='main_menu')]
-    ]
+    try:
+        keyboard = [
+            [InlineKeyboardButton("📊 الإحصائيات", callback_data='admin_stats')],
+            [InlineKeyboardButton("📢 إرسال إشعار", callback_data='admin_broadcast')],
+            [InlineKeyboardButton("🛠 إدارة القنوات", callback_data='manage_channels')],
+            [InlineKeyboardButton("⚙️ تعديل الإعدادات", callback_data='edit_settings')],
+            [InlineKeyboardButton("🔙 رجوع", callback_data='main_menu')]
+        ]
+        
+        await query.edit_message_text("🛠 لوحة تحكم المدير:", reply_markup=InlineKeyboardMarkup(keyboard))
     
-    await query.edit_message_text("🛠 لوحة تحكم المدير:", reply_markup=InlineKeyboardMarkup(keyboard))
+    except Exception as e:
+        logger.error(f"Error in admin panel: {e}")
+        await query.edit_message_text("⚠️ حدث خطأ في فتح لوحة التحكم. الرجاء المحاولة لاحقًا.")
 
 # ========== التشغيل الرئيسي ==========
 def main():
-    # تهيئة التطبيق
-    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    try:
+        logger.info("Starting bot...")
+        
+        # تهيئة التطبيق
+        application = Application.builder().token(TELEGRAM_TOKEN).build()
+        
+        # إضافة المعالجات
+        application.add_handler(CommandHandler('start', start))
+        application.add_handler(CallbackQueryHandler(button_handler))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
+        
+        # إعداد ويب هوك للتشغيل على Render
+        PORT = int(os.environ.get('PORT', 5000))
+        
+        # تأكد أن الرابط ينتهي بـ / إذا لم يكن كذلك
+        webhook_url = WEBHOOK_URL
+        if not webhook_url.endswith('/'):
+            webhook_url += '/'
+        
+        # إعدادات ويب هوك
+        logger.info(f"Setting webhook to: {webhook_url}{TELEGRAM_TOKEN}")
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=PORT,
+            webhook_url=f"{webhook_url}{TELEGRAM_TOKEN}",
+            cert=None,
+            url_path=TELEGRAM_TOKEN,
+            drop_pending_updates=True
+        )
+        
+        logger.info("Bot started successfully with webhook")
     
-    # إضافة المعالجات
-    application.add_handler(CommandHandler('start', start))
-    application.add_handler(CallbackQueryHandler(button_handler))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
-    
-    # إعداد ويب هوك للتشغيل على Render
-    PORT = int(os.environ.get('PORT', 5000))
-    
-    # تأكد أن الرابط ينتهي بـ / إذا لم يكن كذلك
-    webhook_url = WEBHOOK_URL
-    if not webhook_url.endswith('/'):
-        webhook_url += '/'
-    
-    # إعدادات ويب هوك
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        webhook_url=f"{webhook_url}{TELEGRAM_TOKEN}",
-        cert=None,
-        url_path=TELEGRAM_TOKEN,
-        drop_pending_updates=True
-    )
+    except Exception as e:
+        logger.critical(f"Fatal error in main: {e}")
 
 if __name__ == "__main__":
     main()
