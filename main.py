@@ -5,19 +5,22 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import google.generativeai as genai
 
-# التوكنات والإعدادات
-TELEGRAM_TOKEN = "8110119856:AAEKyEiIlpHP2e-xOQym0YHkGEBLRgyG_wA"
-GEMINI_API_KEY = "AIzaSyAEULfP5zi5irv4yRhFugmdsjBoLk7kGsE"
-ADMIN_ID = 7251748706
-BOT_USERNAME = "@SEAK7_BOT"
+# التوكنات والإعدادات (من متغيرات البيئة)
+TELEGRAM_TOKEN = os.environ['8110119856:AAEKyEiIlpHP2e-xOQym0YHkGEBLRgyG_wA']
+GEMINI_API_KEY = os.environ['AIzaSyAEULfP5zi5irv4yRhFugmdsjBoLk7kGsE']
+ADMIN_ID = int(os.environ['7251748706'])
+BOT_USERNAME = os.environ['@SEAK7_BOT']
+WEBHOOK_URL = "https://autu7.onrender.com"  # رابط الويب هوك الخاص بك
 
 # تهيئة Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-pro')
 
 # إعداد قاعدة البيانات
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'bot_db.sqlite')
+
 def init_db():
-    conn = sqlite3.connect('bot_db.sqlite')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
     c.execute('''CREATE TABLE IF NOT EXISTS users
@@ -49,7 +52,7 @@ init_db()
 
 # ========== دوال المساعدة ==========
 def get_setting(setting_name):
-    conn = sqlite3.connect('bot_db.sqlite')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(f"SELECT {setting_name} FROM bot_settings WHERE id = 1")
     result = c.fetchone()[0]
@@ -57,7 +60,7 @@ def get_setting(setting_name):
     return result
 
 def register_user(user, invited_by=0):
-    conn = sqlite3.connect('bot_db.sqlite')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("INSERT OR IGNORE INTO users VALUES (?, ?, ?, ?, ?)",
               (user.id, user.username, user.first_name, datetime.now().isoformat(), invited_by))
@@ -65,7 +68,7 @@ def register_user(user, invited_by=0):
     conn.close()
 
 def check_vip_status(user_id):
-    conn = sqlite3.connect('bot_db.sqlite')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT end_date FROM vip_members WHERE user_id = ?", (user_id,))
     result = c.fetchone()
@@ -76,7 +79,7 @@ def check_vip_status(user_id):
     return False
 
 async def check_channel_subscription(user_id, bot):
-    conn = sqlite3.connect('bot_db.sqlite')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT channel_id FROM required_channels")
     channels = c.fetchall()
@@ -87,12 +90,13 @@ async def check_channel_subscription(user_id, bot):
             member = await bot.get_chat_member(chat_id=channel[0], user_id=user_id)
             if member.status in ['left', 'kicked']:
                 return False
-        except:
+        except Exception as e:
+            print(f"Error checking channel subscription: {e}")
             return False
     return True
 
 def get_required_channels():
-    conn = sqlite3.connect('bot_db.sqlite')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT channel_id, channel_username FROM required_channels")
     channels = c.fetchall()
@@ -100,7 +104,7 @@ def get_required_channels():
     return channels
 
 def check_and_grant_vip(user_id):
-    conn = sqlite3.connect('bot_db.sqlite')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
     c.execute("""SELECT COUNT(*) FROM referrals 
@@ -153,7 +157,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             invited_by = int(args[0][4:])
             register_user(user, invited_by)
             
-            conn = sqlite3.connect('bot_db.sqlite')
+            conn = sqlite3.connect(DB_PATH)
             c = conn.cursor()
             c.execute("INSERT INTO referrals (referrer_id, referee_id, date) VALUES (?, ?, ?)",
                       (invited_by, user.id, datetime.now().isoformat()))
@@ -241,7 +245,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                    reply_markup=main_keyboard(user_id))
 
 async def show_vip_options(query, user_id):
-    conn = sqlite3.connect('bot_db.sqlite')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT COUNT(*) FROM referrals WHERE referrer_id = ? AND is_active = 1", (user_id,))
     ref_count = c.fetchone()[0]
@@ -278,13 +282,30 @@ async def admin_panel(query):
 
 # ========== التشغيل الرئيسي ==========
 def main():
+    # تهيئة التطبيق
     application = Application.builder().token(TELEGRAM_TOKEN).build()
     
+    # إضافة المعالجات
     application.add_handler(CommandHandler('start', start))
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
     
-    application.run_polling()
+    # إعداد ويب هوك للتشغيل على Render
+    PORT = int(os.environ.get('PORT', 5000))
+    
+    # تأكد أن الرابط ينتهي بـ / إذا لم يكن كذلك
+    webhook_url = WEBHOOK_URL
+    if not webhook_url.endswith('/'):
+        webhook_url += '/'
+    
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        webhook_url=f"{webhook_url}{TELEGRAM_TOKEN}",
+        cert=None,
+        url_path=TELEGRAM_TOKEN,
+        drop_pending_updates=True
+    )
 
 if __name__ == "__main__":
     main()
