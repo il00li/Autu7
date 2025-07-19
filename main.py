@@ -121,7 +121,7 @@ if active_refs >= initial_invites:
         
         conn.commit()
     
-    conn.close()
+        conn.close()
 
 # ========== واجهة المستخدم ==========
 def main_keyboard(user_id):
