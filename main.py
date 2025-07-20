@@ -11,7 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 # ====== المتغيرات الثابتة ======
 TELEGRAM_TOKEN = "8110119856:AAEKyEiIlpHP2e-xOQym0YHkGEBLRgyG_wA"
-GEMINI_API_KEY = "AIzaSyAEULfP5zi5irv4yRhFugmdsjBoLk7kGsE"
+GEMINI_API_KEY = "AIzaSyBJ_TOYfVKimQ2zqbMR1pPKvIa0YcxFF8U"
 ADMIN_ID = 7251748706
 BOT_USERNAME = "@SEAK7_BOT"
 ARCHIVE_CHANNEL = "@crazys7"
