@@ -37,7 +37,8 @@ def init_db():
     
     c.execute('''CREATE TABLE IF NOT EXISTS vip_members
                  (user_id INTEGER PRIMARY KEY, start_date TEXT, 
-                 end_date TEXT, invites_required INTEGER DEFAULT 2)''')
+                 end_date TEXT, invites_required INTEGER DEFAULT 2,
+                 is_permanent INTEGER DEFAULT 0)''')  # إضافة عمود للعضوية الدائمة
     
     c.execute('''CREATE TABLE IF NOT EXISTS referrals
                  (referral_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -73,17 +74,40 @@ def register_user(user, invited_by=0):
     c.execute("INSERT OR IGNORE INTO users VALUES (?, ?, ?, ?, ?)",
               (user.id, user.username, user.first_name, datetime.now().isoformat(), invited_by))
     conn.commit()
+    
+    # إذا كان المستخدم هو المدير، منحه عضوية VIP دائمة
+    if user.id == ADMIN_ID:
+        # التحقق مما إذا كان المدير لديه عضوية دائمة بالفعل
+        c.execute("SELECT * FROM vip_members WHERE user_id = ?", (ADMIN_ID,))
+        existing = c.fetchone()
+        
+        if not existing:
+            c.execute("""INSERT OR REPLACE INTO vip_members 
+                      VALUES (?, ?, ?, ?, ?)""",
+                      (ADMIN_ID, datetime.now().isoformat(), 
+                       "9999-12-31", 0, 1))  # 1 تعني عضوية دائمة
+            conn.commit()
+            logger.info(f"Granted permanent VIP to admin: {ADMIN_ID}")
+    
     conn.close()
 
 def check_vip_status(user_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT end_date FROM vip_members WHERE user_id = ?", (user_id,))
+    c.execute("SELECT end_date, is_permanent FROM vip_members WHERE user_id = ?", (user_id,))
     result = c.fetchone()
     conn.close()
     
-    if result and datetime.fromisoformat(result[0]) > datetime.now():
-        return True
+    if result:
+        end_date, is_permanent = result
+        # إذا كانت العضوية دائمة
+        if is_permanent == 1:
+            return True
+        
+        # إذا كانت العضوية مؤقتة ولم تنتهي بعد
+        if end_date and datetime.fromisoformat(end_date) > datetime.now():
+            return True
+    
     return False
 
 async def check_channel_subscription(user_id, bot):
@@ -127,13 +151,43 @@ def check_and_grant_vip(user_id):
         end_date = start_date + timedelta(days=trial_days)
         
         c.execute("""INSERT OR REPLACE INTO vip_members 
-                  VALUES (?, ?, ?, ?)""",
+                  VALUES (?, ?, ?, ?, ?)""",
                   (user_id, start_date.isoformat(), 
-                   end_date.isoformat(), 2))
+                   end_date.isoformat(), 2, 0))  # 0 تعني عضوية غير دائمة
         
         conn.commit()
     
     conn.close()
+
+# ========== دوال جديدة للمدير ==========
+def grant_vip(user_id, days=None, permanent=False):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    start_date = datetime.now()
+    
+    if permanent:
+        end_date = "9999-12-31"  # تاريخ بعيد جداً لتمثيل الديمومة
+        is_permanent = 1
+    else:
+        end_date = (start_date + timedelta(days=days)).isoformat()
+        is_permanent = 0
+    
+    c.execute("""INSERT OR REPLACE INTO vip_members 
+              VALUES (?, ?, ?, ?, ?)""",
+              (user_id, start_date.isoformat(), end_date, 0, is_permanent))
+    
+    conn.commit()
+    conn.close()
+    return True
+
+def get_user_info(user_id):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT user_id, username, first_name FROM users WHERE user_id = ?", (user_id,))
+    user = c.fetchone()
+    conn.close()
+    return user
 
 # ========== واجهة المستخدم ==========
 def main_keyboard(user_id):
@@ -178,7 +232,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except ValueError as ve:
                 logger.error(f"Value error in referral: {ve}")
         
-        register_user(user)
+        register_user(user)  # سيسجل المستخدم ويعطي المدير عضوية دائمة
         
         if not await check_channel_subscription(user.id, context.bot):
             channels = get_required_channels()
@@ -205,6 +259,30 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         user_message = update.message.text
         
+        # معالجة إهداء VIP من المدير
+        if user_id == ADMIN_ID and context.user_data.get('awaiting_user_id_for_gift'):
+            try:
+                target_user_id = int(user_message)
+                gift_type = context.user_data['gift_type']
+                
+                if gift_type == 'permanent':
+                    grant_vip(target_user_id, permanent=True)
+                    message = f"✅ تم منح عضوية VIP الدائمة للمستخدم {target_user_id}"
+                else:
+                    days = int(gift_type)
+                    grant_vip(target_user_id, days=days)
+                    message = f"✅ تم منح عضوية VIP لمدة {days} يوم للمستخدم {target_user_id}"
+                
+                await update.message.reply_text(message)
+                context.user_data.pop('awaiting_user_id_for_gift', None)
+                context.user_data.pop('gift_type', None)
+                return
+            
+            except ValueError:
+                await update.message.reply_text("⚠️ معرف المستخدم غير صحيح. الرجاء إرسال رقم صحيح.")
+                return
+        
+        # بقية معالجة الرسائل
         if not check_vip_status(user_id):
             await update.message.reply_text("⛔ هذه الميزة متاحة لأعضاء VIP فقط\n\n"
                                           "استخدم /start لمعرفة كيفية الحصول على عضوية VIP")
@@ -263,10 +341,48 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif query.data == 'main_menu':
             await query.edit_message_text("🔍 اختر أحد الخيارات من القائمة:", 
                                        reply_markup=main_keyboard(user_id))
+        
+        # معالجة أزرار إهداء VIP
+        elif query.data.startswith('gift_vip_'):
+            gift_type = query.data.split('_')[2]
+            context.user_data['gift_type'] = gift_type
+            context.user_data['awaiting_user_id_for_gift'] = True
+            await query.edit_message_text("📩 أرسل معرف المستخدم (user ID) الذي تريد إهداءه VIP:")
+        
+        elif query.data == 'gift_vip_menu':
+            await gift_vip_menu(query)
     
     except Exception as e:
         logger.error(f"Error in button handler: {e}")
         await query.edit_message_text("⚠️ حدث خطأ غير متوقع. الرجاء المحاولة لاحقًا.")
+
+async def gift_vip_menu(query):
+    keyboard = [
+        [InlineKeyboardButton("هدية VIP دائمة", callback_data='gift_vip_permanent')],
+        [InlineKeyboardButton("هدية VIP لمدة 7 أيام", callback_data='gift_vip_7')],
+        [InlineKeyboardButton("هدية VIP لمدة 30 يوم", callback_data='gift_vip_30')],
+        [InlineKeyboardButton("هدية VIP لمدة 90 يوم", callback_data='gift_vip_90')],
+        [InlineKeyboardButton("🔙 رجوع", callback_data='admin_panel')]
+    ]
+    
+    await query.edit_message_text("🎁 اختر نوع هدية VIP:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def admin_panel(query):
+    try:
+        keyboard = [
+            [InlineKeyboardButton("📊 الإحصائيات", callback_data='admin_stats')],
+            [InlineKeyboardButton("📢 إرسال إشعار", callback_data='admin_broadcast')],
+            [InlineKeyboardButton("🛠 إدارة القنوات", callback_data='manage_channels')],
+            [InlineKeyboardButton("⚙️ تعديل الإعدادات", callback_data='edit_settings')],
+            [InlineKeyboardButton("🎁 إهداء VIP", callback_data='gift_vip_menu')],  # إضافة زر جديد
+            [InlineKeyboardButton("🔙 رجوع", callback_data='main_menu')]
+        ]
+        
+        await query.edit_message_text("🛠 لوحة تحكم المدير:", reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    except Exception as e:
+        logger.error(f"Error in admin panel: {e}")
+        await query.edit_message_text("⚠️ حدث خطأ في فتح لوحة التحكم. الرجاء المحاولة لاحقًا.")
 
 async def show_vip_options(query, user_id):
     try:
@@ -297,22 +413,6 @@ async def show_vip_options(query, user_id):
     except Exception as e:
         logger.error(f"Error showing VIP options: {e}")
         await query.edit_message_text("⚠️ حدث خطأ في عرض خيارات VIP. الرجاء المحاولة لاحقًا.")
-
-async def admin_panel(query):
-    try:
-        keyboard = [
-            [InlineKeyboardButton("📊 الإحصائيات", callback_data='admin_stats')],
-            [InlineKeyboardButton("📢 إرسال إشعار", callback_data='admin_broadcast')],
-            [InlineKeyboardButton("🛠 إدارة القنوات", callback_data='manage_channels')],
-            [InlineKeyboardButton("⚙️ تعديل الإعدادات", callback_data='edit_settings')],
-            [InlineKeyboardButton("🔙 رجوع", callback_data='main_menu')]
-        ]
-        
-        await query.edit_message_text("🛠 لوحة تحكم المدير:", reply_markup=InlineKeyboardMarkup(keyboard))
-    
-    except Exception as e:
-        logger.error(f"Error in admin panel: {e}")
-        await query.edit_message_text("⚠️ حدث خطأ في فتح لوحة التحكم. الرجاء المحاولة لاحقًا.")
 
 # ========== التشغيل الرئيسي ==========
 def main():
