@@ -2,11 +2,21 @@ import os
 import sqlite3
 import logging
 import asyncio
+import sys
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import google.generativeai as genai
 from apscheduler.schedulers.background import BackgroundScheduler
+
+# ====== المتغيرات الثابتة ======
+TELEGRAM_TOKEN = "8110119856:AAEKyEiIlpHP2e-xOQym0YHkGEBLRgyG_wA"
+GEMINI_API_KEY = "AIzaSyAEULfP5zi5irv4yRhFugmdsjBoLk7kGsE"
+ADMIN_ID = 7251748706
+BOT_USERNAME = "@SEAK7_BOT"
+ARCHIVE_CHANNEL = "@crazys7"
+WEBHOOK_URL = "https://autu7.onrender.com"
+# ================================
 
 # إعداد تسجيل الأخطاء
 logging.basicConfig(
@@ -14,14 +24,45 @@ logging.basicConfig(
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
+logger.info("بدء تشغيل بوت الأبيات العربية")
 
-# تهيئة المجدول
-scheduler = BackgroundScheduler()
+# تهيئة Gemini
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-1.5-pro-latest')
 
-# التوكنات والإعدادات (من متغيرات البيئة)
-TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
-GEMINI_API_KEY = os.environ['GEMINI_API_KEY']
-ADMIN_ID = int
+# إعداد قاعدة البيانات
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'poetry_bot.sqlite')
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS users
+                 (user_id INTEGER PRIMARY KEY, username TEXT, first_name TEXT, 
+                 join_date TEXT, notification_time INTEGER DEFAULT 5)''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS channels
+                 (channel_id TEXT PRIMARY KEY, user_id INTEGER, 
+                 title TEXT, added_date TEXT, is_active INTEGER DEFAULT 1,
+                 attribution INTEGER DEFAULT 1)''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS user_settings
+                 (user_id INTEGER PRIMARY KEY, interval_hours INTEGER DEFAULT 24,
+                 style TEXT DEFAULT 'classic')''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS posts
+                 (post_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  user_id INTEGER, channel_id TEXT,
+                  content TEXT, poet TEXT, book TEXT,
+                  post_time TEXT, style TEXT)''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS schedule
+                 (user_id INTEGER PRIMARY KEY, next_post_time TEXT)''')
+    
+    conn.commit()
+    conn.close()
+
+init_db()
 # ========== دوال المساعدة ==========
 def register_user(user):
     conn = sqlite3.connect(DB_PATH)
@@ -107,14 +148,15 @@ def get_scheduled_posts():
 
 async def generate_poetry():
     try:
-        response = model.generate_content(
-            "اكتب بيتين من الشعر العربي الأصيل في موضوع عشوائي. "
-            "يجب أن يكون البيتان متوافقين في الوزن والقافية. "
-            "في النهاية اكتب: الشاعر: [اسم] من كتاب: [اسم]"
-        )
+        prompt = """
+        اكتب بيتين من الشعر العربي الأصيل في موضوع عشوائي. 
+        يجب أن يكون البيتان متوافقين في الوزن والقافية.
+        في النهاية اكتب: الشاعر: [اسم] من كتاب: [اسم]
+        """
+        response = model.generate_content(prompt)
         return response.text
     except Exception as e:
-        logger.error(f"Error generating poetry: {e}")
+        logger.error(f"خطأ في توليد الشعر: {e}")
         return None
 
 def format_poetry(content, style, show_attribution=True):
@@ -150,7 +192,9 @@ def back_to_main():
     return InlineKeyboardMarkup([[InlineKeyboardButton("🔙 رجوع", callback_data='main_menu')]])
 
 def channel_management_keyboard(channels):
-    keyboard = [[InlineKeyboardButton(f"📢 {title}", callback_data=f'channel_{id}')] for id, title, _, _ in channels]
+    keyboard = []
+    for channel_id, title, _, _ in channels:
+        keyboard.append([InlineKeyboardButton(f"📢 {title}", callback_data=f'channel_{channel_id}')])
     keyboard.append([InlineKeyboardButton("🔙 رجوع", callback_data='main_menu')])
     return InlineKeyboardMarkup(keyboard)
 
@@ -343,7 +387,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         pass
                     
                 except Exception as e:
-                    logger.error(f"Error publishing: {e}")
+                    logger.error(f"خطأ في النشر: {e}")
             
             await query.edit_message_text(f"✅ تم النشر في {published} قناة", reply_markup=main_keyboard())
             del context.user_data['generated_poetry']
@@ -355,7 +399,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await stats_command(update, context)
             
     except Exception as e:
-        logger.error(f"Button error: {e}")
+        logger.error(f"خطأ في الأزرار: {e}")
         await query.edit_message_text("⚠️ حدث خطأ، يرجى المحاولة مرة أخرى", reply_markup=main_keyboard())
 
 async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -369,14 +413,14 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"✅ {message}" if success else f"⚠️ {message}", reply_markup=main_keyboard())
         except Exception as e:
             await update.message.reply_text("⚠️ تعذر إضافة القناة، تأكد من:\n- صحة المعرف\n- أن البوت مشرف", reply_markup=main_keyboard())
-            logger.error(f"Channel error: {e}")
+            logger.error(f"خطأ في القناة: {e}")
         finally:
             context.user_data.pop('awaiting_channel', None)
     else:
         await update.message.reply_text("اختر من القائمة:", reply_markup=main_keyboard())
         # ========== وظائف المجدولة ==========
 async def scheduled_posting_job():
-    logger.info("Running scheduled posting...")
+    logger.info("جاري النشر المجدول...")
     posts = get_scheduled_posts()
     now = datetime.now()
     
@@ -399,12 +443,9 @@ async def scheduled_posting_job():
                     
                     formatted, poet, book = format_poetry(poetry, style, attribution)
                     try:
-                        # الحصول على كائن البوت من السياق
-                        bot = context.bot if 'context' in globals() else None
-                        if not bot:
-                            from telegram import Bot
-                            bot = Bot(token=TELEGRAM_TOKEN)
-                        
+                        # إنشاء كائن البوت
+                        from telegram import Bot
+                        bot = Bot(token=TELEGRAM_TOKEN)
                         await bot.send_message(chat_id=channel_id, text=formatted)
                         
                         # تسجيل في قاعدة البيانات
@@ -422,24 +463,25 @@ async def scheduled_posting_job():
                                 text=f"📜 {poetry}\n\nالشاعر: {poet}\nمن كتاب: {book}"
                             )
                         except Exception as e:
-                            logger.error(f"Archive error: {e}")
+                            logger.error(f"خطأ في الأرشيف: {e}")
                             
                     except Exception as e:
-                        logger.error(f"Publishing error: {e}")
+                        logger.error(f"خطأ في النشر: {e}")
                 
                 # جدولة التالية
                 schedule_next_post(user_id)
                 
             except Exception as e:
-                logger.error(f"Scheduled job error: {e}")
+                logger.error(f"خطأ في المهمة المجدولة: {e}")
 
 # ========== التشغيل الرئيسي ==========
 def main():
     try:
-        # بدء المجدول
+        # تهيئة المجدول
+        scheduler = BackgroundScheduler()
         scheduler.add_job(scheduled_posting_job, 'interval', minutes=5)
         scheduler.start()
-        logger.info("Scheduler started")
+        logger.info("تم بدء المجدول")
         
         # تهيئة تطبيق التليجرام
         application = Application.builder().token(TELEGRAM_TOKEN).build()
@@ -455,7 +497,7 @@ def main():
         PORT = int(os.environ.get('PORT', 5000))
         webhook_url = WEBHOOK_URL.rstrip('/') + '/'
         
-        logger.info("Starting webhook...")
+        logger.info("بدء تشغيل ويب هوك...")
         application.run_webhook(
             listen="0.0.0.0",
             port=PORT,
@@ -463,10 +505,10 @@ def main():
             url_path=TELEGRAM_TOKEN,
             drop_pending_updates=True
         )
-        logger.info("Bot started successfully")
+        logger.info("تم تشغيل البوت بنجاح")
         
     except Exception as e:
-        logger.critical(f"Fatal error: {e}")
+        logger.critical(f"خطأ فادح: {e}")
 
 if __name__ == "__main__":
     main()
