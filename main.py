@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 import google.generativeai as genai
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # إعداد تسجيل الأخطاء
 logging.basicConfig(
@@ -14,12 +15,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# تهيئة المجدول
+scheduler = BackgroundScheduler()
+scheduler.start()
+
 # التوكنات والإعدادات (من متغيرات البيئة)
 TELEGRAM_TOKEN = os.environ.get('TELEGRAM_TOKEN', '8110119856:AAEKyEiIlpHP2e-xOQym0YHkGEBLRgyG_wA')
 GEMINI_API_KEY = os.environ.get('GEMINI_API_KEY', 'AIzaSyAEULfP5zi5irv4yRhFugmdsjBoLk7kGsE')
 ADMIN_ID = int(os.environ.get('ADMIN_ID', '7251748706'))
 BOT_USERNAME = os.environ.get('BOT_USERNAME', '@SEAK7_BOT')
-ARCHIVE_CHANNEL = os.environ.get('ARCHIVE_CHANNEL', '@crazys7')
+ARCHIVE_CHANNEL = os.environ.get('ARCHIVE_CHANNEL', '@PoetryArchive')
 WEBHOOK_URL = "https://autu7.onrender.com"  # رابط الويب هوك الخاص بك
 
 # تهيئة Gemini
@@ -591,7 +596,7 @@ async def handle_messages(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⚠️ حدث خطأ غير متوقع. الرجاء المحاولة لاحقًا.")
 
 # ========== وظائف المجدولة ==========
-async def scheduled_posting(context: ContextTypes.DEFAULT_TYPE):
+async def scheduled_posting():
     try:
         posts = get_scheduled_posts()
         now = datetime.now()
@@ -652,6 +657,9 @@ async def scheduled_posting(context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         logger.error(f"Error in scheduled posting: {e}")
 
+# إضافة المهمة المجدولة
+scheduler.add_job(scheduled_posting, 'interval', minutes=5)
+
 # ========== التشغيل الرئيسي ==========
 def main():
     try:
@@ -666,9 +674,6 @@ def main():
         application.add_handler(CommandHandler('stats', stats_command))
         application.add_handler(CallbackQueryHandler(button_handler))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_messages))
-        
-        # إضافة المهمة المجدولة
-        application.job_queue.run_repeating(scheduled_posting, interval=300, first=10)
         
         # إعداد ويب هوك للتشغيل على Render
         PORT = int(os.environ.get('PORT', 5000))
